@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Movie Recommendation System</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+
+<button id="scrollTopBtn" title="Go to top">⬆</button>
+
+<body>
+
+    <header>
+        <h1>🎬 Movie Recommendation</h1>
+
+        <div class="controls">
+            <input type="text" id="searchInput" placeholder="Search movies, anime, genres...">
+            <ul id="suggestions" class="suggestions"></ul>
+
+            <select id="categorySelect"></select>
+            <select id="genreSelect"></select>
+
+            <button id="searchBtn">Search</button>
+        </div>
+    </header>
+
+    <div id="cardContainer" class="cards"></div>
+
+    <script src="/static/js/script.js"></script>
+</body>
+
+</html>
