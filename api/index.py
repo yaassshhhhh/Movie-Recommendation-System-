@@ -1,7 +1,5 @@
 from flask import Flask, render_template, request, jsonify
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import linear_kernel
+import json
 import os
 
 app = Flask(__name__, 
@@ -11,40 +9,22 @@ app = Flask(__name__,
 # Get the base directory
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# ================= LOAD DATA =================
-movies_df = pd.read_csv(os.path.join(BASE_DIR, 'data/movies.csv'))
+# Load pre-computed data
+try:
+    with open(os.path.join(BASE_DIR, 'data/movies.json'), 'r') as f:
+        movies_list = json.load(f)
+        
+    with open(os.path.join(BASE_DIR, 'data/recommendations.json'), 'r') as f:
+        recommendations = json.load(f)
+        
+    print("Loaded data successfully.")
+except Exception as e:
+    print(f"Error loading data: {e}")
+    movies_list = []
+    recommendations = {}
 
-movies_df['Description'] = movies_df['Description'].fillna('')
-movies_df['Genre'] = movies_df['Genre'].fillna('')
-movies_df['Poster_URL'] = movies_df['Poster_URL'].replace('', None)
-movies_df['Poster_URL'] = movies_df['Poster_URL'].fillna('/static/images/placeholder.jpg')
-
-movies_df['Content'] = movies_df['Genre'] + " " + movies_df['Description']
-
-tfidf = TfidfVectorizer(stop_words='english')
-tfidf_matrix = tfidf.fit_transform(movies_df['Content'])
-cosine_sim = linear_kernel(tfidf_matrix, tfidf_matrix)
-
-indices = pd.Series(movies_df.index, index=movies_df['Title']).drop_duplicates()
-# =============================================
-
-
-def get_recommendations(title):
-    if title not in indices:
-        return []
-
-    idx = indices[title]
-    sim_scores = sorted(
-        list(enumerate(cosine_sim[idx])),
-        key=lambda x: x[1],
-        reverse=True
-    )[1:11]
-
-    movie_indices = [i[0] for i in sim_scores]
-    return movies_df.iloc[movie_indices][
-        ['Title', 'Category', 'Genre', 'Poster_URL', 'Description']
-    ].to_dict('records')
-
+# Helper to optimize lookups
+movies_by_title = {m['Title'].lower(): m for m in movies_list}
 
 @app.route('/')
 def home():
@@ -53,10 +33,15 @@ def home():
 
 @app.route('/api/metadata')
 def metadata():
-    categories = sorted(movies_df['Category'].unique())
-    genres = sorted(
-        set(g.strip() for sub in movies_df['Genre'].str.split(',') for g in sub)
-    )
+    categories = sorted(list(set(m['Category'] for m in movies_list)))
+    
+    genres_set = set()
+    for m in movies_list:
+        if m['Genre']:
+            for g in m['Genre'].split(','):
+                genres_set.add(g.strip())
+                
+    genres = sorted(list(genres_set))
     return jsonify({'categories': categories, 'genres': genres})
 
 
@@ -72,32 +57,47 @@ def search():
     if genre.lower().startswith('all'):
         genre = 'All'
 
-    df = movies_df.copy()
+    filtered_movies = movies_list
 
     if category != 'All':
-        df = df[df['Category'].str.lower() == category.lower()]
+        filtered_movies = [
+            m for m in filtered_movies 
+            if m['Category'].lower() == category.lower()
+        ]
 
     if genre != 'All':
-        df = df[df['Genre'].str.lower().str.contains(genre.lower(), na=False)]
+        filtered_movies = [
+            m for m in filtered_movies 
+            if genre.lower() in m['Genre'].lower()
+        ]
 
     if query:
-        categories = movies_df['Category'].str.lower().unique()
-        genres = set(
-            g.strip().lower()
-            for sub in movies_df['Genre'].str.split(',')
-            for g in sub
-        )
+        # Check specific fields first (mimicking original logic)
+        categories = set(m['Category'].lower() for m in movies_list)
+        
+        genres = set()
+        for m in movies_list:
+            if m['Genre']:
+                for g in m['Genre'].split(','):
+                    genres.add(g.strip().lower())
 
         if query in categories:
-            df = df[df['Category'].str.lower() == query]
+            filtered_movies = [
+                m for m in filtered_movies 
+                if m['Category'].lower() == query
+            ]
         elif query in genres:
-            df = df[df['Genre'].str.lower().str.contains(query, na=False)]
+            filtered_movies = [
+                m for m in filtered_movies 
+                if query in m['Genre'].lower()
+            ]
         else:
-            df = df[df['Title'].str.lower().str.contains(query, na=False)]
+            filtered_movies = [
+                m for m in filtered_movies 
+                if query in m['Title'].lower()
+            ]
 
-    return jsonify(df[
-        ['Title', 'Category', 'Genre', 'Poster_URL', 'Description']
-    ].to_dict('records'))
+    return jsonify(filtered_movies)
 
 
 @app.route('/api/autocomplete')
@@ -105,17 +105,22 @@ def autocomplete():
     q = request.args.get('q', '').lower()
     suggestions = set()
 
-    for c in movies_df['Category'].unique():
-        if c.lower().startswith(q):
-            suggestions.add(c)
+    for m in movies_list:
+        if m['Category'].lower().startswith(q):
+            suggestions.add(m['Category'])
+            
+        if m['Genre']:
+            for g in m['Genre'].split(','):
+                if g.strip().lower().startswith(q):
+                    suggestions.add(g.strip())
 
-    for sub in movies_df['Genre'].str.split(','):
-        for g in sub:
-            if g.strip().lower().startswith(q):
-                suggestions.add(g.strip())
-
-    titles = movies_df[movies_df['Title'].str.lower().str.startswith(q)]['Title'].head(5)
-    suggestions.update(titles)
+    # Add matching titles (limit to 5)
+    title_matches = [
+        m['Title'] for m in movies_list 
+        if m['Title'].lower().startswith(q)
+    ][:5]
+    
+    suggestions.update(title_matches)
 
     return jsonify(list(suggestions)[:8])
 
@@ -123,10 +128,18 @@ def autocomplete():
 @app.route('/api/recommend', methods=['POST'])
 def recommend():
     title = request.json.get('title', '')
-    return jsonify(get_recommendations(title))
+    
+    # Direct lookup in pre-computed dictionary
+    if title in recommendations:
+        return jsonify(recommendations[title])
+        
+    return jsonify([])
 
 
 # This is required for Vercel
 if __name__ != '__main__':
     # Vercel will use this
     application = app
+
+if __name__ == '__main__':
+    app.run(debug=True)
